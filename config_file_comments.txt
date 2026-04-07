@@ -1,0 +1,13 @@
+#xxxxx FOLDER SETTINGS xxxxx
+#usually no need to change anything here, this should remain the same if nobody messes up the hard drive / renames main folders.
+#these patterns can be used by scripts in this folder for easier batch processing
+
+"RELATIVE_DICOM_ROOT_PATH_7T":		the top root directory to the 7T files, without the drive directory
+"RELATIVE_DICOM_ROOT_PATH_3T":		the top root directory to the 3T files, without the drive directory
+"RELATIVE_OUTPUT_DIR_ROOT_7T":		the output top root directory to the 7T files, without the drive directory
+"RELATIVE_OUTPUT_DIR_ROOT_3T":		the output top root directory to the 3T files, without the drive directory
+"GENERAL_FOLDER_TEMPLATE_7T":		the folder template to the 7T dicom files, MUST have {dicom_root} and {subject} placeholders
+"GENERAL_FOLDER_TEMPLATE_3T":		the folder template to the 3T dicom files, MUST have {dicom_root} and {subject} placeholders
+"DICOMINFO_TSV_NAME" : 			name of the dicom tsv after modifying contents. MUST have {subject} placeholder
+"MODALITY_SEQUENCE_IDENTIFIERS": 	rules by which a scan is recognized as a certain modality (e.g. given series description xy, is it a t1w scan?)
+

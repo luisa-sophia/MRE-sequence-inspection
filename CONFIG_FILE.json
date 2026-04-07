@@ -1,0 +1,16 @@
+{
+  "RELATIVE_DICOM_ROOT_PATH_7T": "MR_Data/Raw/MRE/7T_Terra", 
+  "RELATIVE_DICOM_ROOT_PATH_3T": "MR_Data/Raw/MRE/3T_Skyra",
+  "RELATIVE_OUTPUT_DIR_ROOT_7T": "Scan_Summaries/MRE/7T_Terra",
+  "RELATIVE_OUTPUT_DIR_ROOT_3T": "Scan_Summaries/MRE/3T_Skyra",
+  "GENERAL_FOLDER_TEMPLATE_7T": "{dicom_root}/{subject}/SCANS/*/DICOM/*.dcm", 
+  "GENERAL_FOLDER_TEMPLATE_3T": "{dicom_root}/{subject}/*/*/*.IMA",
+  "DICOMINFO_TSV_NAME" : "dicominfo_mod-{subject}.tsv",
+  "METADATA_SUMMARY_TSV_NAME": "MRE_metadata_summary_{scanner}.tsv",
+  "MODALITY_SEQUENCE_IDENTIFIERS": {
+    "T1w": ["t1"],
+    "T2w": ["t2"],
+    "fMRI": ["face", "cmrr"],
+    "MRE": ["tomomre", "mre_"]
+  }
+}

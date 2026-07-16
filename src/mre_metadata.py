@@ -1,6 +1,7 @@
 from pathlib import Path
 import glob
 import os
+from nibabel.nicom import csareader
 import re
 
 import numpy as np
@@ -19,9 +20,8 @@ SUMMARY_OUTPUT_COLUMNS = [
     "TR",
     "TE",
     "SeriesDescription",
-    "InPlanePhaseEncodingDirection",
-    "ScanOrder",
-    "freqIndices",
+    "SlicePlane",
+    "PhaseEncodingDirection",
     "freqs_Hz",
     "timeStepIndices",
     "dirIndices",
@@ -57,12 +57,14 @@ def _is_mre_phase_slice(file_path: str) -> bool:
 
 
 def _get_slice_plane(dcm):
-    """Infer acquisition plane from the DICOM orientation vectors."""
+    """Infer acquisition plane from the DICOM orientation vectors.
+       This tells us the axis along which the brain was "sliced" during the scan.
+       E.g. if the slice plane is axial, we have a bunch of coronal 2D images."""
     image_ori_patient = np.array(dcm.ImageOrientationPatient, dtype=float)
     row = image_ori_patient[:3]
     col = image_ori_patient[3:]
     normal = np.cross(row, col)
-    axis = np.argmax(np.abs(normal))
+    axis = np.argmax(np.abs(normal)) #which axis is closest
     return ["sagittal", "coronal", "axial"][axis]
 
 
@@ -87,9 +89,6 @@ def _split_folder_pattern_template(folder_pattern_template: str) -> tuple[str, s
     sequence_pattern_template, file_ext = folder_pattern_template.split("*.")
     file_pattern = f"*.{file_ext.strip()}"
     return dicom_root, sequence_pattern_template, file_pattern
-
-
-_split_pattern_template = _split_folder_pattern_template
 
 
 
@@ -179,6 +178,42 @@ def extract_MRE_seq_info(folder_pattern_template, subject_list=None, ignore_hidd
     return df_summary, df_full
 
 
+def _get_phase_encoding_axis_and_direction(ds):
+    """Get the phase encoding axis and direction for the dicom file.
+     The Dicom tag "ImageOrientationPatient" and "InPlanePhaseEncodingDirection" reveal the axis, whereas the tag "PhaseEncodingDirectionPositive" in the CSA header 
+     gives information about the direction (e.g. AP or PA).
+     DICOM data is standardized to LPS+, with values increasing along the axis (i.e. values increase from R to L, A to P, and I to S)
+    """
+
+    iop = np.array(ds.ImageOrientationPatient, dtype=float)
+    #Image Orientation (Patient) (0020,0037) specifies the direction cosines of the first row and the first column with respect to the patient. 
+    row = iop[:3]
+    col = iop[3:]
+
+    if ds.InPlanePhaseEncodingDirection == "ROW":
+        phase = row
+    elif ds.InPlanePhaseEncodingDirection == "COL":
+        phase = col
+    else:
+        return "N/A"
+
+    axis = np.argmax(np.abs(phase))
+    csa_header = csareader.get_csa_header(ds, csa_type='image')  
+    sign = csareader.get_scalar(csa_header, 'PhaseEncodingDirectionPositive') # where 1 positive direction, and 0 is reversed
+    if sign is None:
+        return "N/A"
+
+
+    #dicom coordinate system is LPS so 
+    directions = {
+        0: ("R", "L"), 
+        1: ("A", "P"), 
+        2: ("I", "S")   
+    }
+    encoding_direction = directions[axis] if sign > 0 else directions[axis][::-1]
+    return "".join(encoding_direction)
+
+
 
 def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
     """Parse one DICOM file and return extracted MRE metadata, or `None` if it is not usable."""
@@ -206,10 +241,11 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
             "TR": ds.get("RepetitionTime", "N/A"),
             "TE": ds.get("EchoTime", "N/A"),
             "SeriesDescription": ds.get("SeriesDescription"),
-            "InPlanePhaseEncodingDirection": ds.get("InPlanePhaseEncodingDirection", "N/A"),
+            #"InPlanePhaseEncodingDirection": ds.get("InPlanePhaseEncodingDirection", "N/A"),
             "ImageType": str(ds.get("ImageType", "N/A")),
             "Date": date,
-            "ScanOrder": _get_slice_plane(ds),
+            "SlicePlane": _get_slice_plane(ds),
+            "PhaseEncodingDirection": _get_phase_encoding_axis_and_direction(ds)
         }
         metadata.update(image_comment_data)
         return metadata

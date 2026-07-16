@@ -7,10 +7,14 @@
   "GENERAL_FOLDER_TEMPLATE_3T": "{dicom_root}/{subject}/*/*/*.IMA",
   "DICOMINFO_TSV_NAME" : "dicominfo_mod-{subject}.tsv",
   "METADATA_SUMMARY_TSV_NAME": "MRE_metadata_summary_{scanner}.tsv",
-  "MODALITY_SEQUENCE_IDENTIFIERS": {
-    "T1w": ["t1"],
-    "T2w": ["t2"],
-    "fMRI": ["face", "cmrr"],
-    "MRE": ["tomomre", "mre_"]
+  "MODALITY_SEQUENCE_IDENTIFIER_PATTERNS": {
+    "T1w": [".*t1.*"],
+    "T2w": [".*t2.*"],
+    "fMRI": [".*face.*", ".*cmrr.*"],
+    "MRE": ["^(?!.*fmre).*mre_"],
+    "fMRE": [".*fmre_.*"]
   }
 }
+
+
+

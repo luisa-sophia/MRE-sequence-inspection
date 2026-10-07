@@ -1,13 +1,16 @@
 #xxxxx FOLDER SETTINGS xxxxx
 #usually no need to change anything here, this should remain the same if nobody messes up the hard drive / renames main folders.
-#these patterns can be used by scripts in this folder for easier batch processing
+#all paths are relative to the drive root (the folder containing '.drive_root.txt'), as the drive might be mounted differently each time.
+#load the config in a notebook with: cfg = src.config.load_config()
 
-"RELATIVE_DICOM_ROOT_PATH_7T":		   the top root directory to the 7T files, without the drive directory
-"RELATIVE_DICOM_ROOT_PATH_3T":		   the top root directory to the 3T files, without the drive directory
-"RELATIVE_OUTPUT_DIR_ROOT_7T":		   the output top root directory to the 7T files, without the drive directory
-"RELATIVE_OUTPUT_DIR_ROOT_3T":		   the output top root directory to the 3T files, without the drive directory
-"GENERAL_FOLDER_TEMPLATE_7T":		   the folder template to the 7T dicom files, MUST have {dicom_root} and {subject} placeholders
-"GENERAL_FOLDER_TEMPLATE_3T":		   the folder template to the 3T dicom files, MUST have {dicom_root} and {subject} placeholders
-"DICOMINFO_TSV_NAME" : 			   name of the dicom tsv after modifying contents. MUST have {subject} placeholder
-"MODALITY_SEQUENCE_IDENTIFIER_PATTERNS":   rules by which a scan is recognized as a certain modality, as regex patterns (e.g. given series description xy, is it a t1w scan?)
+"SCANNERS":                                one block per scanner, the key (e.g. "7T") is used as label and in output file names.
+                                           To add a scanner, add another block with the same three entries:
+    "RELATIVE_DICOM_ROOT":                 the top root directory to the dicom files of this scanner, without the drive directory
+    "RELATIVE_OUTPUT_DIR_ROOT":            the output top root directory for this scanner, without the drive directory
+    "FOLDER_TEMPLATE":                     the folder template to the dicom files, MUST have {dicom_root} and {subject} placeholders
 
+"DICOMINFO_TSV_NAME":                      name of the dicom tsv after modifying contents. MUST have {subject} placeholder
+"METADATA_SUMMARY_TSV_NAME":               name of the MRE metadata summary per scanner. MUST have {scanner} placeholder
+"MODALITY_SEQUENCE_IDENTIFIER_PATTERNS":   rules by which a scan is recognized as a certain modality (e.g. given series description xy, is it a t1w scan?).
+                                           regex patterns, case insensitive, matched anywhere in the series description (re.search).
+                                           A modality matches if any of its patterns match; a scan can count for several modalities.

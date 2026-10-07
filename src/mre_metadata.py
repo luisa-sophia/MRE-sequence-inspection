@@ -1,6 +1,8 @@
+from datetime import datetime
 from pathlib import Path
 import glob
 import os
+import shutil
 from nibabel.nicom import csareader
 import re
 
@@ -300,12 +302,29 @@ def get_missing_subjects(tsv_path: str | Path, dicom_root: str | Path, ignore_hi
 
 
 
+def _row_keys(df: pd.DataFrame, key_cols: list[str]) -> pd.Series:
+    """One string key per row, so keys match regardless of dtype (e.g. 13 vs '13')."""
+    return df[key_cols].astype(str).agg("|".join, axis=1)
+
+
 def append_summary_rows(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
-    """Append new rows to an existing summary and de-duplicate by key columns."""
+    """Append new rows to an existing summary and de-duplicate by key columns.
+
+    Re-scanned rows replace their old version. Columns that only exist in the existing
+    summary (manual columns, e.g. 'Notes' or 'PrivateName') are carried over to the new rows.
+    """
     if existing_df.empty:
         return new_df.copy()
     if new_df.empty:
         return existing_df.copy()
+
+    key_cols = [col for col in SUMMARY_KEY_COLUMNS if col in existing_df.columns and col in new_df.columns]
+    manual_cols = [col for col in existing_df.columns if col not in new_df.columns]
+    if key_cols and manual_cols:
+        manual_values = existing_df[manual_cols].set_index(_row_keys(existing_df, key_cols))
+        manual_values = manual_values[~manual_values.index.duplicated(keep="last")]
+        new_df = new_df.copy()
+        new_df[manual_cols] = manual_values.reindex(_row_keys(new_df, key_cols)).to_numpy()
 
     combined = pd.concat([existing_df, new_df], ignore_index=True)
     dedupe_cols = [col for col in SUMMARY_KEY_COLUMNS if col in combined.columns]
@@ -315,6 +334,17 @@ def append_summary_rows(existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.D
     if sort_cols:
         combined = combined.sort_values(by=sort_cols).reset_index(drop=True)
     return combined
+
+
+
+def backup_file(path: str | Path) -> Path:
+    """Copy a file to 'backups/<name>_<date>_<time><ext>' next to it. Old backups are never deleted."""
+    path = Path(path)
+    backup_dir = path.parent / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    backup_path = backup_dir / f"{path.stem}_{datetime.now():%Y-%m-%d_%H%M%S}{path.suffix}"
+    shutil.copy2(path, backup_path)
+    return backup_path
 
 
 
@@ -366,6 +396,8 @@ def update_summary_tsv(
     if dry_run:
         print(f"Dry run activated. Would save to {output_tsv_path}")
     else:
+        if output_tsv_path.exists():
+            print(f"Backup of previous version: '{backup_file(output_tsv_path)}'")
         summary_to_write.to_csv(output_tsv_path, sep="\t", index=False)
         print(f"Wrote file to '{output_tsv_path}'")
 

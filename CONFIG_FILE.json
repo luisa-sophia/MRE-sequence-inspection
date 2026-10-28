@@ -8,7 +8,7 @@
     "3T": {
       "RELATIVE_DICOM_ROOT": "MR_Data/Raw/MRE/3T_Skyra",
       "RELATIVE_OUTPUT_DIR_ROOT": "Scan_Summaries/MRE/3T_Skyra",
-      "FOLDER_TEMPLATE": "{dicom_root}/{subject}/*/*/*.IMA"
+      "FOLDER_TEMPLATE": "{dicom_root}/{subject}/*/*/*.[dI][cM][mA]"
     }
   },
   "DICOMINFO_TSV_NAME": "dicominfo_mod-{subject}.tsv",

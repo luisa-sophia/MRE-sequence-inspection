@@ -89,7 +89,7 @@ def extract_subject_foldername_and_patientid(pattern_template, ignore_hidden = T
         iterator = glob.iglob(current_pattern_template, root_dir = dicom_root, recursive = True, include_hidden=ignore_hidden)
         first_match = next(iterator, None)
         if first_match is None:
-            print(f"Skipping folder '{sub_dir}': No match found for regex '{current_pattern_template}' . Check folder hierarchy.")
+            print(f"Skipping folder '{sub_dir}': No match found for glob query '{current_pattern_template}' with current template. Check folder hierarchy.")
             continue
         else:
             patient_name = str(pydicom.dcmread(os.path.join(dicom_root, first_match)).PatientName)

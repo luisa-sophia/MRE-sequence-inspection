@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pydicom
 
-
 SUMMARY_KEY_COLUMNS = ["SubjectName", "PatientID", "Date", "SeriesNumberPhase"]
 SUMMARY_SORT_COLUMNS = ["Date", "PatientID", "SeriesNumberPhase"]
 SUMMARY_OUTPUT_COLUMNS = [
@@ -31,6 +30,9 @@ SUMMARY_OUTPUT_COLUMNS = [
     "num_files",
 ]
 
+def _is_enhanced_dicom(ds) -> bool:
+    return ds.get("SOPClassUID") == "1.2.840.10008.5.1.4.1.1.4.1"
+
 
 def format_meg_vector(vectors):
     """Format one or more motion-encoding vectors for TSV output."""
@@ -41,8 +43,11 @@ def format_meg_vector(vectors):
     return "[" + "; ".join("({:.3f}, {:.3f}, {:.3f})".format(*vec) for vec in vectors) + "]"
 
 
+def _has_MRE_content(string: str) -> bool:
+    """Return True if a string contains the MRE tag."""
+    return isinstance(string, str) and "MRE:" in string
 
-def _is_mre_phase_slice(file_path: str) -> bool:
+def _img_has_imagecomments(file_path: str) -> bool:
     """Return True if a DICOM file appears to be an MRE phase image."""
     try:
         ds = pydicom.dcmread(
@@ -51,23 +56,71 @@ def _is_mre_phase_slice(file_path: str) -> bool:
             specific_tags=["ImageComments"],
         )
         image_comments = ds.get("ImageComments")
-        return isinstance(image_comments, str) and image_comments.startswith("MRE:")
+        return _has_MRE_content(image_comments)
+    except Exception:
+        return False
+
+def _is_phase_data(file_path: str) -> bool:
+    """Return True if a DICOM file appears to be an MRE phase image."""
+    try:
+        ds = pydicom.dcmread(
+            file_path,
+            stop_before_pixels=True,
+            specific_tags=["ImageType"],
+        )
+        image_type = ds.get("ImageType", None)
+        if image_type and any(["phase" == e.lower() or "p" == e.lower() for e in list(image_type)]):
+            return True
+        return False
     except Exception:
         return False
 
 
+def _dicom_get(ds, *tags, cast=float, default=-1):
+    """Safely traverse nested DICOM tags, returning default if anything fails.
+    
+    Usage:
+        _dicom_get(ds, (0x5200,0x9229), 0, (0x0018,0x9112), 0, (0x0018,0x0080))
+        # integers are treated as sequence indices, tuples as tag addresses
+    """
+    try:
+        val = ds
+        for tag in tags:
+            if isinstance(tag, int):
+                val = val[tag]
+            else:
+                val = val[tag].value
+        return cast(val) if cast else val
+    except Exception:
+        return default
+
+
+def _get_iop_and_pe_dir(ds):
+    """Get ImageOrientationPatient and InPlanePhaseEncodingDirection, handling enhanced DICOM."""
+    if _is_enhanced_dicom(ds):
+        iop = _dicom_get(ds, (0x5200,0x9230), 0, (0x0020,0x9116), 0, (0x0020,0x0037), cast=list, default=None)
+        pe_dir = _dicom_get(ds, (0x5200,0x9229), 0, (0x0018,0x9125), 0, (0x0018,0x1312), cast=str, default=None)
+    else:
+        iop = list(ds.ImageOrientationPatient)
+        pe_dir = str(ds.InPlanePhaseEncodingDirection)
+    return iop, pe_dir
 
 
 def _get_slice_plane(dcm):
     """Infer acquisition plane from the DICOM orientation vectors.
        This tells us the axis along which the brain was "sliced" during the scan.
        E.g. if the slice plane is axial, we have a bunch of coronal 2D images."""
-    image_ori_patient = np.array(dcm.ImageOrientationPatient, dtype=float)
-    row = image_ori_patient[:3]
-    col = image_ori_patient[3:]
-    normal = np.cross(row, col)
-    axis = np.argmax(np.abs(normal)) #which axis is closest
-    return ["sagittal", "coronal", "axial"][axis]
+    try:
+        iop, _ = _get_iop_and_pe_dir(dcm)
+        if iop is None:
+            image_ori_patient = np.array(iop, dtype=float)
+            row = image_ori_patient[:3]
+            col = image_ori_patient[3:]
+            normal = np.cross(row, col)
+            axis = np.argmax(np.abs(normal))
+            return ["sagittal", "coronal", "axial"][axis]
+    except Exception:
+        return "N/A"
 
 
 
@@ -96,15 +149,26 @@ def _split_folder_pattern_template(folder_pattern_template: str) -> tuple[str, s
 
 def _extract_sequence_metadata(seq_dir: str, file_pattern: str, subject_name: str, ignore_hidden: bool, verbose: bool) -> list[dict]:
     """Extract metadata rows from a single sequence directory if it contains MRE phase data."""
-    file_paths = glob.glob(os.path.join(seq_dir, file_pattern), include_hidden=not ignore_hidden)
+    #handle paths that have special characters like [] or so
+    if not glob.glob(seq_dir):
+        seq_dir_safe = glob.escape(seq_dir)
+        file_paths = glob.glob(os.path.join(seq_dir_safe, file_pattern), include_hidden=not ignore_hidden)
+    else:
+        file_paths = glob.glob(os.path.join(seq_dir, file_pattern), include_hidden=not ignore_hidden)
+
     if not file_paths:
         if verbose:
-            print(f"WARNING: No files found for sequence directory '{seq_dir}', subject '{subject_name}'.")
+            print(f"[WARN], No files found: '{seq_dir}', subject '{subject_name}'.")
         return []
 
-    if not _is_mre_phase_slice(file_paths[0]):
+    if not _img_has_imagecomments(file_paths[0]):
         if verbose:
-            print(f"NO, MRE metadata in '{seq_dir}', skipping folder...")
+            print(f"[~],  no MRE comment found: '{seq_dir}'")
+        return []
+
+    if not _is_phase_data(file_paths[0]):
+        if verbose:
+            print(f"[~],  MRE comment found, but is not phase: '{seq_dir}'")
         return []
 
     metadata_rows = []
@@ -115,7 +179,7 @@ def _extract_sequence_metadata(seq_dir: str, file_pattern: str, subject_name: st
             continue
         metadata_rows.append(mre_info)
         if verbose and not printed_note:
-            print(f"YES, MRE metadata found in '{seq_dir}', processing files...")
+            print(f"[OK], MRE comment found & is phase data '{seq_dir}', processing files...")
             printed_note = True
     return metadata_rows
 
@@ -161,6 +225,8 @@ def extract_MRE_seq_info(folder_pattern_template, subject_list=None, ignore_hidd
     if mre_info_list:
         df_full = pd.DataFrame(mre_info_list).sort_values(by="SOPInstanceUID").reset_index(drop=True)
         df_summary = create_subject_MRE_overview_table(df_full)
+
+
         subs_with_mre = set(df_summary["SubjectName"].values)
         cols_to_keep = [col for col in SUMMARY_OUTPUT_COLUMNS if col in df_summary.columns]
         df_summary = df_summary[cols_to_keep]
@@ -186,34 +252,43 @@ def _get_phase_encoding_axis_and_direction(ds):
      gives information about the direction (e.g. AP or PA).
      DICOM data is standardized to LPS+, with values increasing along the axis (i.e. values increase from R to L, A to P, and I to S)
     """
+    #Image Orientation (Patient) specifies the direction cosines of the first row and the first column with respect to the patient. 
+    try:
+        iop, inplane_pe_dir = _get_iop_and_pe_dir(ds)
+        if iop is None or inplane_pe_dir is None:
+            return "N/A"
+        row = np.array(iop[:3], dtype=float)
+        col = np.array(iop[3:], dtype=float)
 
-    iop = np.array(ds.ImageOrientationPatient, dtype=float)
-    #Image Orientation (Patient) (0020,0037) specifies the direction cosines of the first row and the first column with respect to the patient. 
-    row = iop[:3]
-    col = iop[3:]
+        if inplane_pe_dir == "ROW":
+            phase = row
+        elif inplane_pe_dir == "COL" or inplane_pe_dir == "COLUMN":
+            phase = col
+        else:
+            return "N/A"
 
-    if ds.InPlanePhaseEncodingDirection == "ROW":
-        phase = row
-    elif ds.InPlanePhaseEncodingDirection == "COL":
-        phase = col
-    else:
+        axis = np.argmax(np.abs(phase))
+        csa_header = csareader.get_csa_header(ds, csa_type='image')
+        if csa_header:
+            sign = csareader.get_scalar(csa_header, 'PhaseEncodingDirectionPositive') # where 1 positive direction, and 0 is reversed
+        else:
+            #for enhanced csareader doesnt work, found on this github that private DICOM tag (0021, 111C) is PhaseEncodingDirectionPositiveSiemens
+            #https://github.com/orgs/open-dicom/discussions/12
+            #by going frame by frame through groups, I found the nested path to the tag
+            #same same 1 is positive, 0 is reversed 
+            sign = _dicom_get(ds, (0x5200,0x9230), 0, (0x0021,0x11FE), 0, (0x0021,0x111C), cast=int, default=None)
+        
+        if sign is None:
+            return "N/A"
+        
+        #dicom coordinate system is LPS so 
+        directions = {0: ("R", "L"), 1: ("A", "P"), 2: ("I", "S")}
+        encoding_direction = directions[axis] if sign > 0 else directions[axis][::-1]
+        return "".join(encoding_direction)
+    except Exception:
+        import traceback
+        traceback.print_exc()
         return "N/A"
-
-    axis = np.argmax(np.abs(phase))
-    csa_header = csareader.get_csa_header(ds, csa_type='image')  
-    sign = csareader.get_scalar(csa_header, 'PhaseEncodingDirectionPositive') # where 1 positive direction, and 0 is reversed
-    if sign is None:
-        return "N/A"
-
-
-    #dicom coordinate system is LPS so 
-    directions = {
-        0: ("R", "L"), 
-        1: ("A", "P"), 
-        2: ("I", "S")   
-    }
-    encoding_direction = directions[axis] if sign > 0 else directions[axis][::-1]
-    return "".join(encoding_direction)
 
 
 
@@ -222,15 +297,28 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
     try:
         ds = pydicom.dcmread(file_path, stop_before_pixels=True)
         image_comment = ds.get("ImageComments")
-        if not (image_comment and image_comment.startswith("MRE:")):
+
+        if not _has_MRE_content(image_comment):
             return None
 
         image_comment_data = parse_MRE_tag(ds, convert_arrays_to_list=True)
-        pxlspacing = ds.get("PixelSpacing", [-1, -1])
-        z_spacing = ds.get("SpacingBetweenSlices", -1)
-        zooms = tuple(round(float(x), 3) for x in np.hstack((pxlspacing, z_spacing)))
-        date = ds.get("AcquisitionDate")
-        date = f"{date[:4]}-{date[4:6]}-{date[-2:]}" if date else None
+
+        if _is_enhanced_dicom(ds):
+            TR         = _dicom_get(ds, (0x5200,0x9229), 0, (0x0018,0x9112), 0, (0x0018,0x0080))
+            TE         = _dicom_get(ds, (0x5200,0x9230), 0, (0x0018,0x9114), 0, (0x0018,0x9082))
+            pxlspacing = _dicom_get(ds, (0x5200,0x9230), 0, (0x0028,0x9110), 0, (0x0028,0x0030), cast=lambda x: [float(v) for v in x], default=[-1,-1])
+            z_spacing  = _dicom_get(ds, (0x5200,0x9230), 0, (0x0028,0x9110), 0, (0x0018,0x0088))
+            date = ds.get("AcquisitionDateTime", None)
+            date = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if date else None
+        else:
+            TR = ds.get("RepetitionTime", -1)
+            TE = ds.get("EchoTime", -1)
+            pxlspacing = ds.get("PixelSpacing", [-1, -1])
+            z_spacing = ds.get("SpacingBetweenSlices", -1)
+            date = ds.get("AcquisitionDate", None)
+            date = f"{date[:4]}-{date[4:6]}-{date[-2:]}" if date else None
+
+        zooms = tuple(round(x, 3) for x in [*pxlspacing, z_spacing])
         relative_filepath = os.path.splitdrive(file_path)[1]
 
         metadata = {
@@ -240,8 +328,8 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
             "Path": relative_filepath,
             "SOPInstanceUID": ds.get("SOPInstanceUID", "N/A"),
             "Resolution": str(zooms),
-            "TR": ds.get("RepetitionTime", "N/A"),
-            "TE": ds.get("EchoTime", "N/A"),
+            "TR": TR,
+            "TE": TE,
             "SeriesDescription": ds.get("SeriesDescription"),
             #"InPlanePhaseEncodingDirection": ds.get("InPlanePhaseEncodingDirection", "N/A"),
             "ImageType": str(ds.get("ImageType", "N/A")),
@@ -252,7 +340,9 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
         metadata.update(image_comment_data)
         return metadata
     except Exception as e:
-        print(f"Error processing {file_path}: {e}\n --> Skipping this file.")
+        import traceback
+        print(f"Error processing {file_path}: {e}")
+        traceback.print_exc()
         return None
 
 
@@ -260,11 +350,19 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
 def create_subject_MRE_overview_table(mre_info_df):
     """Collapse per-file metadata into one summary row per MRE phase series."""
     mre_info_df = mre_info_df.copy()
-    mre_info_df["megVector"] = mre_info_df["megVector"].apply(lambda v: tuple(v) if isinstance(v, list) else v)
-    grouped = mre_info_df.groupby(["PatientID", "Date", "SeriesNumberPhase"], as_index=False).agg(
-        num_files=("SOPInstanceUID", "size"),
-        **{col: (col, "unique") for col in mre_info_df.columns if col not in ["PatientID", "Date", "SeriesNumberPhase"]},
-    ).reset_index(drop=True)
+    #convert to hashable tuple
+    for col in mre_info_df.columns:
+        if col not in ["PatientID", "Date", "SeriesNumberPhase"]:
+            mre_info_df[col] = mre_info_df[col].apply(
+                lambda v: tuple(v) if isinstance(v, (list, np.ndarray)) else v
+            )
+    #group so that each row corresponds to one unique series, and aggregate the other columns into lists
+    grouped = mre_info_df.groupby(["PatientID", "Date", "SeriesNumberPhase"], 
+                                  as_index=False,
+                                  dropna=False).agg(
+                                      num_files=("SOPInstanceUID", "size"),
+                                      **{col: (col, "unique") for col in mre_info_df.columns if col not in ["PatientID", "Date", "SeriesNumberPhase"]},
+                                      ).reset_index(drop=True)
     grouped["freqs_Hz"] = grouped["freqs_Hz"].apply(lambda values: [round(float(freq), 2) for freq in values])
     return collapse_unique_columns(grouped)
 
@@ -438,19 +536,18 @@ def parse_MRE_tag(metadata_dict, convert_arrays_to_list=True, flatten_meg_vector
     pattern = r'(\s|^|\])az\[(?P<azimuths>\d+)\]po\[(?P<polars>\d+)\]'
     ret = re.search(pattern, tag, flags=re.IGNORECASE)
     if ret:
-        if not metadata_dict.get('enhanced', False):
+        if not _is_enhanced_dicom(metadata_dict):
             extracted_info['SliceLocation'] = metadata_dict.get('SliceLocation', None)
 
-        iop = metadata_dict.get('ImageOrientationPatient')
-        if isinstance(iop, list):
-            iop = np.array(iop)
-            extracted_info['ImageOrientationPatient'] = iop
+        iop, _ = _get_iop_and_pe_dir(metadata_dict)
+        iop = np.array(iop)
+        extracted_info['ImageOrientationPatient'] = iop
 
         extracted_info['azimuth'] = float(ret.group('azimuths'))
         extracted_info['polar'] = float(ret.group('polars'))
 
         cubeOrientation = np.zeros((3, 3))
-        iop = metadata_dict['ImageOrientationPatient']
+
         cubeOrientation[:, 0] = iop[:3] / np.linalg.norm(iop[:3])
         cubeOrientation[:, 1] = iop[3:6] / np.linalg.norm(iop[3:6])
         cubeOrientation[:, 2] = np.cross(cubeOrientation[:, 0], cubeOrientation[:, 1])

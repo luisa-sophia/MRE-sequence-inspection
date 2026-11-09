@@ -1,4 +1,5 @@
 {
+  "DRIVE_ROOT_MARKER_FILE": ".drive_root.txt",
   "SCANNERS": {
     "7T": {
       "RELATIVE_DICOM_ROOT": "MR_Data/Raw/MRE/7T_Terra",

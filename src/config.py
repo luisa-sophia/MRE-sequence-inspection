@@ -4,8 +4,6 @@ from pathlib import Path
 
 from . import utils
 
-DRIVE_ROOT_MARKER = ".drive_root.txt"
-
 
 @dataclass(frozen=True)
 class ScannerPaths:
@@ -39,7 +37,7 @@ class Config:
             print(f"  {modality:8}: {patterns}")
 
 
-def load_config(config_path: str | Path = "CONFIG_FILE.json", start: str | Path | None = None) -> Config:
+def load_config(config_path: str | Path = "CONFIG_FILE.json", start: str | Path | None = None, root_overwrite: str | Path | None = None) -> Config:
     """
     Load the config json and resolve all relative paths against the drive root.
 
@@ -49,7 +47,14 @@ def load_config(config_path: str | Path = "CONFIG_FILE.json", start: str | Path 
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    root = utils.find_root_with_marker(Path(start or Path.cwd()), DRIVE_ROOT_MARKER)
+    
+    if root_overwrite:
+        if not Path(root_overwrite).exists():
+            raise FileNotFoundError(f"Drive root overwrite path '{root_overwrite}' does not exist.")
+        root = root_overwrite
+    else:
+        drive_root_marker = cfg["DRIVE_ROOT_MARKER_FILE"]
+        root = utils.find_root_with_marker(Path(start or Path.cwd()), drive_root_marker)
 
     scanners = {}
     for label, s in cfg["SCANNERS"].items():

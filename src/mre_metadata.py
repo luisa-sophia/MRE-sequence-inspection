@@ -30,6 +30,10 @@ SUMMARY_OUTPUT_COLUMNS = [
     "num_files",
 ]
 
+# Tags needed to decide whether a sequence is MRE phase data (cheap partial read).
+_MRE_CHECK_TAGS = ["SOPClassUID", "ImageType", "ImageComments", "PerFrameFunctionalGroupsSequence"]
+
+
 def _is_enhanced_dicom(ds) -> bool:
     return ds.get("SOPClassUID") == "1.2.840.10008.5.1.4.1.1.4.1"
 
@@ -47,27 +51,22 @@ def _has_MRE_content(string: str) -> bool:
     """Return True if a string contains the MRE tag."""
     return isinstance(string, str) and "MRE:" in string
 
-def _img_has_imagecomments(file_path: str) -> bool:
-    """Return True if a DICOM file appears to be an MRE phase image."""
-    try:
-        ds = pydicom.dcmread(
-            file_path,
-            stop_before_pixels=True,
-            specific_tags=["ImageComments"],
-        )
-        image_comments = ds.get("ImageComments")
-        return _has_MRE_content(image_comments)
-    except Exception:
-        return False
+def _get_MRE_imagecomments(ds) -> str | None:
+    """Return the MRE image comment of an (already read) DICOM dataset, or None.
 
-def _is_phase_data(file_path: str) -> bool:
-    """Return True if a DICOM file appears to be an MRE phase image."""
+    Enhanced DICOM: PerFrameFunctionalGroupsSequence[0].FrameContentSequence[0].FrameComments
+    Classic DICOM:  ImageComments
+    """
+    if _is_enhanced_dicom(ds):
+        image_comments = _dicom_get(ds, (0x5200, 0x9230), 0, (0x0020, 0x9111), 0, (0x0020, 0x9158), cast=str, default=None)
+    else:
+        image_comments = ds.get("ImageComments", None)
+    return image_comments if _has_MRE_content(image_comments) else None
+
+
+def _is_phase_data(ds) -> bool:
+    """Return True if an (already read) DICOM dataset appears to be an MRE phase image."""
     try:
-        ds = pydicom.dcmread(
-            file_path,
-            stop_before_pixels=True,
-            specific_tags=["ImageType"],
-        )
         image_type = ds.get("ImageType", None)
         if image_type and any(["phase" == e.lower() or "p" == e.lower() for e in list(image_type)]):
             return True
@@ -112,7 +111,7 @@ def _get_slice_plane(dcm):
        E.g. if the slice plane is axial, we have a bunch of coronal 2D images."""
     try:
         iop, _ = _get_iop_and_pe_dir(dcm)
-        if iop is None:
+        if iop is not None:
             image_ori_patient = np.array(iop, dtype=float)
             row = image_ori_patient[:3]
             col = image_ori_patient[3:]
@@ -161,12 +160,19 @@ def _extract_sequence_metadata(seq_dir: str, file_pattern: str, subject_name: st
             print(f"[WARN], No files found: '{seq_dir}', subject '{subject_name}'.")
         return []
 
-    if not _img_has_imagecomments(file_paths[0]):
+    try:
+        first_ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, specific_tags=_MRE_CHECK_TAGS)
+    except Exception as e:
+        if verbose:
+            print(f"[WARN], could not read '{file_paths[0]}': {e}")
+        return []
+
+    if not _get_MRE_imagecomments(first_ds):
         if verbose:
             print(f"[~],  no MRE comment found: '{seq_dir}'")
         return []
 
-    if not _is_phase_data(file_paths[0]):
+    if not _is_phase_data(first_ds):
         if verbose:
             print(f"[~],  MRE comment found, but is not phase: '{seq_dir}'")
         return []
@@ -296,12 +302,11 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
     """Parse one DICOM file and return extracted MRE metadata, or `None` if it is not usable."""
     try:
         ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-        image_comment = ds.get("ImageComments")
 
-        if not _has_MRE_content(image_comment):
+        if not _get_MRE_imagecomments(ds):
             return None
 
-        image_comment_data = parse_MRE_tag(ds, convert_arrays_to_list=True)
+        MRE_specific_data = parse_MRE_dcm_header(ds, convert_arrays_to_list=True)
 
         if _is_enhanced_dicom(ds):
             TR         = _dicom_get(ds, (0x5200,0x9229), 0, (0x0018,0x9112), 0, (0x0018,0x0080))
@@ -337,7 +342,7 @@ def try_extract_metadata_from_mre_dicom(file_path, custom_subject_name=None):
             "SlicePlane": _get_slice_plane(ds),
             "PhaseEncodingDirection": _get_phase_encoding_axis_and_direction(ds)
         }
-        metadata.update(image_comment_data)
+        metadata.update(MRE_specific_data)
         return metadata
     except Exception as e:
         import traceback
@@ -503,14 +508,17 @@ def update_summary_tsv(
 
 
 
-def parse_MRE_tag(metadata_dict, convert_arrays_to_list=True, flatten_meg_vector=True):
-    """Extract MRE-specific fields from the Siemens `ImageComments` tag."""
+def parse_MRE_dcm_header(metadata_dict, convert_arrays_to_list=True, flatten_meg_vector=True):
+    """Extract MRE-specific fields from the Siemens MRE image comment.
+
+    Takes the whole DICOM dataset (not just the comment string), because the
+    az/po branch also needs ImageOrientationPatient and SliceLocation.
+    """
     extracted_info = {}
 
-    if 'ImageComments' not in metadata_dict:
+    tag = _get_MRE_imagecomments(metadata_dict)
+    if tag is None:
         return extracted_info
-
-    tag = metadata_dict.ImageComments
 
     pattern = r'(\s|^|\])(fI|F )\[{0,1}(?P<freqIndices>\d+)\]{0,1}'
     ret = re.search(pattern, tag, flags=re.IGNORECASE)
